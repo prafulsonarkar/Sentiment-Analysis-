@@ -9,4 +9,7 @@ https://docs.google.com/document/d/1CqYrLEIqRqMEJ_JGsHkyMeIiG4CjURaO/edit
 ## AMMIG
 https://colab.research.google.com/drive/19DDqRjgXKY6yXlvsfCISz87ppj3Rt4iI#scrollTo=nmbCYw26s8x5
 
+## Laion400M Dataset Link
+https://drive.google.com/file/d/1-yqalf06FxPEHngbIrkELzt4JLDIP7ZS/view?usp=drive_link
+
 
