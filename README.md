@@ -14,3 +14,7 @@ https://drive.google.com/file/d/1BCWvfBSXDQNwDJAoEE42mXXBiubhXYH8/view?usp=drive
 
 https://drive.google.com/file/d/1BCWvfBSXDQNwDJAoEE42mXXBiubhXYH8/view?usp=drivesdk
 https://drive.google.com/file/d/1BCWvfBSXDQNwDJAoEE42mXXBiubhXYH8/view?usp=drivesdk
+
+
+## Assembly ai
+https://archive.ph/wMSX0
