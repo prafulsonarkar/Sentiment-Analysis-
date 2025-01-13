@@ -18,3 +18,7 @@ https://drive.google.com/file/d/1BCWvfBSXDQNwDJAoEE42mXXBiubhXYH8/view?usp=drive
 
 ## Assembly ai
 https://archive.ph/wMSX0
+
+## code pretrain model
+
+https://docs.google.com/document/d/1d5rpajRKFnLFUbrWSF0I7qwk8g67U9wuIIIxzC4TMik/edit?usp=drivesdk
