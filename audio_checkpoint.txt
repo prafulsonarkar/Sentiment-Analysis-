@@ -1,0 +1,155 @@
+import torch
+import librosa
+import numpy as np
+from transformers import WhisperProcessor, WhisperForConditionalGeneration
+from pathlib import Path
+import soundfile as sf
+import warnings
+warnings.filterwarnings("ignore")
+
+class FineTunedASRTester:
+    def __init__(self, checkpoint_path):
+        """
+        Initialize ASR tester with a fine-tuned model checkpoint
+        
+        Parameters:
+        checkpoint_path (str): Path to the checkpoint directory or file
+        """
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.checkpoint_path = checkpoint_path
+        self.model = None
+        self.processor = None
+        
+    def load_model(self):
+        """Load the fine-tuned model and processor"""
+        try:
+            print(f"Loading model from {self.checkpoint_path}")
+            
+            # Load processor and model from checkpoint
+            self.processor = WhisperProcessor.from_pretrained(self.checkpoint_path)
+            self.model = WhisperForConditionalGeneration.from_pretrained(
+                self.checkpoint_path,
+                device_map=self.device
+            )
+            
+            # Configure model settings
+            self.model.config.forced_decoder_ids = self.processor.get_decoder_prompt_ids(
+                language="hi",
+                task="transcribe"
+            )
+            self.model.config.suppress_tokens = None
+            
+            print("Model loaded successfully")
+            return True
+            
+        except Exception as e:
+            print(f"Error loading model: {str(e)}")
+            return False
+    
+    def process_audio(self, audio_path):
+        """
+        Process audio file for ASR
+        
+        Parameters:
+        audio_path (str): Path to audio file
+        
+        Returns:
+        torch.Tensor: Processed audio features
+        """
+        try:
+            # Load and resample audio
+            audio, sr = librosa.load(audio_path, sr=16000)
+            
+            # Process audio
+            inputs = self.processor(
+                audio, 
+                sampling_rate=16000,
+                return_tensors="pt"
+            )
+            
+            return inputs.input_features.to(self.device)
+            
+        except Exception as e:
+            print(f"Error processing audio: {str(e)}")
+            return None
+
+    def transcribe(self, audio_path):
+        """
+        Transcribe audio using the fine-tuned model
+        
+        Parameters:
+        audio_path (str): Path to audio file
+        
+        Returns:
+        str: Transcribed text
+        """
+        if self.model is None:
+            if not self.load_model():
+                return None
+        
+        try:
+            # Process audio
+            input_features = self.process_audio(audio_path)
+            if input_features is None:
+                return None
+            
+            # Generate transcription
+            with torch.no_grad():
+                predicted_ids = self.model.generate(
+                    input_features,
+                    language="hi",
+                    task="transcribe",
+                    max_length=448
+                )
+                
+                transcription = self.processor.batch_decode(
+                    predicted_ids,
+                    skip_special_tokens=True,
+                    normalize=True
+                )[0]
+                
+            return transcription
+            
+        except Exception as e:
+            print(f"Error during transcription: {str(e)}")
+            return None
+
+def test_model_on_directory(checkpoint_path, test_dir):
+    """
+    Test model on all audio files in a directory
+    
+    Parameters:
+    checkpoint_path (str): Path to model checkpoint
+    test_dir (str): Directory containing test audio files
+    """
+    # Initialize tester
+    tester = FineTunedASRTester(checkpoint_path)
+    
+    # Get all audio files
+    audio_files = list(Path(test_dir).glob("*.mp3")) + \
+                  list(Path(test_dir).glob("*.wav")) + \
+                  list(Path(test_dir).glob("*.m4a"))
+    
+    print(f"\nTesting {len(audio_files)} audio files...")
+    
+    # Process each file
+    for audio_file in audio_files:
+        print(f"\nProcessing: {audio_file.name}")
+        transcription = tester.transcribe(str(audio_file))
+        if transcription:
+            print(f"Transcription: {transcription}")
+
+# Example usage
+if __name__ == "__main__":
+    # Example paths - modify these to your actual paths
+    CHECKPOINT_PATH = "/path/to/your/checkpoint"
+    TEST_AUDIO_DIR = "/path/to/test/audio/files"
+    
+    # Test single file
+    tester = FineTunedASRTester(CHECKPOINT_PATH)
+    result = tester.transcribe("/path/to/single/test/audio.mp3")
+    if result:
+        print(f"Single file transcription: {result}")
+    
+    # Test directory
+    test_model_on_directory(CHECKPOINT_PATH, TEST_AUDIO_DIR)
