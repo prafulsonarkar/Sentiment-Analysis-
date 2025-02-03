@@ -263,3 +263,289 @@ def main():
 
 if __name__ == "__main__":
     main()
+## Information Distilled
+import torch
+import torch.nn as nn
+from torch.nn import functional as F
+import editdistance
+from indicnlp.normalize.indic_normalize import IndicNormalizerFactory
+from indic_transliteration import sanscript
+from indic_transliteration.sanscript import SchemeMap, SCHEMES, transliterate
+import re
+
+class TransliterationLayer(nn.Module):
+    def __init__(self, vocab_size):
+        super().__init__()
+        self.vocab_size = vocab_size
+        # Mapping layer for non-Hindi to Hindi characters
+        self.char_mapping = nn.Linear(vocab_size, vocab_size)
+        
+    def forward(self, x):
+        # Apply character mapping
+        return self.char_mapping(x)
+
+class HindiTranscriptionLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.normalizer = IndicNormalizerFactory().get_normalizer('hi')
+        
+    def forward(self, pred, target, language_tags):
+        """
+        Custom loss for Hindi transcription with transliteration awareness
+        """
+        base_loss = F.cross_entropy(pred.view(-1, pred.size(-1)), target.view(-1))
+        
+        # Additional penalty for non-Hindi characters in output
+        hindi_char_mask = (target >= self.hindi_char_start) & (target < self.hindi_char_end)
+        transliteration_loss = F.cross_entropy(
+            pred.view(-1, pred.size(-1))[hindi_char_mask],
+            target.view(-1)[hindi_char_mask]
+        ) if torch.any(hindi_char_mask) else 0
+        
+        return base_loss + 0.5 * transliteration_loss
+
+class MetricsCalculator:
+    def __init__(self, processor):
+        self.processor = processor
+        self.normalizer = IndicNormalizerFactory().get_normalizer('hi')
+        
+    def normalize_text(self, text):
+        """Normalize Hindi text removing extra spaces and unwanted characters"""
+        text = self.normalizer.normalize(text)
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text
+    
+    def transliterate_to_hindi(self, text, source_lang):
+        """Transliterate text to Hindi if needed"""
+        if source_lang in ['pa', 'ur']:
+            try:
+                if source_lang == 'pa':
+                    text = transliterate(text, sanscript.GURMUKHI, sanscript.DEVANAGARI)
+                elif source_lang == 'ur':
+                    text = transliterate(text, sanscript.URDU, sanscript.DEVANAGARI)
+            except:
+                pass  # Keep original text if transliteration fails
+        return text
+    
+    def calculate_wer(self, hypothesis, reference, language_tags):
+        """
+        Calculate Word Error Rate with language-aware processing
+        """
+        # Normalize and transliterate both hypothesis and reference
+        hyp_words = []
+        ref_words = []
+        
+        for h, r, langs in zip(hypothesis, reference, language_tags):
+            # Decode if needed
+            if isinstance(h, torch.Tensor):
+                h = self.processor.batch_decode(h, skip_special_tokens=True)[0]
+            if isinstance(r, torch.Tensor):
+                r = self.processor.batch_decode(r, skip_special_tokens=True)[0]
+            
+            # Process each language segment
+            for lang in langs:
+                h = self.transliterate_to_hindi(h, lang)
+                r = self.transliterate_to_hindi(r, lang)
+            
+            # Normalize
+            h = self.normalize_text(h)
+            r = self.normalize_text(r)
+            
+            hyp_words.extend(h.split())
+            ref_words.extend(r.split())
+        
+        # Calculate WER
+        distance = editdistance.eval(hyp_words, ref_words)
+        return (distance / len(ref_words)) * 100
+
+def train_with_metrics(
+    teacher_model,
+    student_model,
+    train_loader,
+    valid_loader,
+    num_epochs=20,
+    temp=2.0,
+    alpha=0.5
+):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    teacher_model = teacher_model.to(device)
+    student_model = student_model.to(device)
+    
+    # Initialize losses
+    kl_criterion = nn.KLDivLoss(reduction='batchmean')
+    feat_criterion = nn.MSELoss()
+    hindi_criterion = HindiTranscriptionLoss()
+    metrics_calculator = MetricsCalculator(processor)
+    
+    optimizer = optim.AdamW(student_model.parameters(), lr=1e-4)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
+    
+    best_valid_wer = float('inf')
+    
+    for epoch in range(num_epochs):
+        student_model.train()
+        train_wer = 0
+        train_loss = 0
+        num_batches = 0
+        
+        for batch in train_loader:
+            input_features = batch['input_features'].to(device)
+            labels = batch['labels'].to(device)
+            language_tags = batch['language_tags']
+            
+            # Teacher predictions
+            with torch.no_grad():
+                teacher_output = teacher_model(
+                    input_features,
+                    labels=labels,
+                    output_hidden_states=True
+                )
+                teacher_logits = teacher_output.logits
+                teacher_features = teacher_output.hidden_states[-1]
+            
+            # Student forward pass
+            student_output = student_model(input_features, language_tags)
+            
+            # Calculate losses
+            kl_loss = kl_criterion(
+                torch.log_softmax(student_output / temp, dim=-1),
+                torch.softmax(teacher_logits / temp, dim=-1)
+            )
+            
+            feat_loss = feat_criterion(student_output, teacher_features)
+            hindi_loss = hindi_criterion(student_output, labels, language_tags)
+            
+            # Combined loss
+            total_loss = (
+                0.4 * kl_loss +
+                0.3 * feat_loss +
+                0.3 * hindi_loss
+            )
+            
+            optimizer.zero_grad()
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(student_model.parameters(), 1.0)
+            optimizer.step()
+            
+            # Calculate WER for this batch
+            with torch.no_grad():
+                predictions = torch.argmax(student_output, dim=-1)
+                batch_wer = metrics_calculator.calculate_wer(
+                    predictions, labels, language_tags
+                )
+                train_wer += batch_wer
+                train_loss += total_loss.item()
+                num_batches += 1
+        
+        # Validation phase
+        student_model.eval()
+        valid_wer = 0
+        valid_loss = 0
+        num_valid_batches = 0
+        
+        with torch.no_grad():
+            for batch in valid_loader:
+                input_features = batch['input_features'].to(device)
+                labels = batch['labels'].to(device)
+                language_tags = batch['language_tags']
+                
+                student_output = student_model(input_features, language_tags)
+                predictions = torch.argmax(student_output, dim=-1)
+                
+                # Calculate validation WER
+                batch_wer = metrics_calculator.calculate_wer(
+                    predictions, labels, language_tags
+                )
+                valid_wer += batch_wer
+                num_valid_batches += 1
+        
+        # Calculate epoch metrics
+        epoch_train_wer = train_wer / num_batches
+        epoch_valid_wer = valid_wer / num_valid_batches
+        epoch_train_loss = train_loss / num_batches
+        
+        print(f"Epoch {epoch + 1}/{num_epochs}")
+        print(f"Train Loss: {epoch_train_loss:.4f}")
+        print(f"Train WER: {epoch_train_wer:.2f}%")
+        print(f"Validation WER: {epoch_valid_wer:.2f}%")
+        
+        # Save best model
+        if epoch_valid_wer < best_valid_wer:
+            best_valid_wer = epoch_valid_wer
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': student_model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'valid_wer': best_valid_wer,
+            }, 'best_hindi_asr_model.pth')
+        
+        scheduler.step()
+
+def evaluate_model(model, test_loader, metrics_calculator):
+    """
+    Evaluate model with detailed metrics
+    """
+    model.eval()
+    total_wer = 0
+    language_specific_wer = {'hi': [], 'pa': [], 'ur': []}
+    num_batches = 0
+    
+    with torch.no_grad():
+        for batch in test_loader:
+            input_features = batch['input_features'].to(device)
+            labels = batch['labels'].to(device)
+            language_tags = batch['language_tags']
+            
+            outputs = model(input_features, language_tags)
+            predictions = torch.argmax(outputs, dim=-1)
+            
+            # Calculate overall WER
+            batch_wer = metrics_calculator.calculate_wer(
+                predictions, labels, language_tags
+            )
+            total_wer += batch_wer
+            
+            # Calculate language-specific WER
+            for i, tags in enumerate(language_tags):
+                for lang in tags:
+                    if lang in language_specific_wer:
+                        lang_wer = metrics_calculator.calculate_wer(
+                            predictions[i:i+1], 
+                            labels[i:i+1], 
+                            [tags]
+                        )
+                        language_specific_wer[lang].append(lang_wer)
+            
+            num_batches += 1
+    
+    # Calculate average metrics
+    avg_wer = total_wer / num_batches
+    lang_wer_results = {
+        lang: sum(wers) / len(wers) if wers else 0 
+        for lang, wers in language_specific_wer.items()
+    }
+    
+    return {
+        'overall_wer': avg_wer,
+        'language_wer': lang_wer_results
+    }
+
+if __name__ == "__main__":
+    # Initialize models and data loaders as before
+    # Add evaluation code
+    metrics_calculator = MetricsCalculator(processor)
+    
+    train_with_metrics(
+        teacher_model,
+        student_model,
+        train_loader,
+        valid_loader
+    )
+    
+    # Final evaluation
+    test_metrics = evaluate_model(student_model, test_loader, metrics_calculator)
+    print("\nFinal Test Results:")
+    print(f"Overall WER: {test_metrics['overall_wer']:.2f}%")
+    print("\nLanguage-specific WER:")
+    for lang, wer in test_metrics['language_wer'].items():
+        print(f"{lang}: {wer:.2f}%")
