@@ -1,0 +1,52 @@
+1. Download the Whisper Model:
+# On a machine with internet:
+git lfs install
+git clone https://huggingface.co/vasista/whisper-hindi-large-v2
+
+# Then transfer the entire whisper-hindi-large-v2 folder to your offline machine
+
+
+2. Prepare your Directory Structure:
+your_project/
+├── multilingual_whisper_kd.py
+├── data/
+│   ├── train.csv
+│   ├── val.csv
+│   └── audio_files/
+├── models/
+│   └── whisper-hindi-large-v2/  # Place downloaded model here
+└── checkpoints/                 # Will store training checkpoints
+
+
+3. Install Dependencies (on offline machine):
+# After transferring wheel files as explained earlier
+pip install torch-*.whl
+pip install torchaudio-*.whl
+pip install transformers-*.whl
+pip install pandas-*.whl
+pip install numpy-*.whl
+pip install tqdm-*.whl
+pip install jiwer-*.whl
+
+torch>=2.0.0
+torchaudio>=2.0.0
+transformers>=4.30.0  # For Whisper model
+pandas>=1.5.0
+numpy>=1.21.0
+tqdm>=4.65.0
+wandb>=0.15.0  # For experiment tracking
+jiwer>=3.0.0   # For WER (Word Error Rate) calculation
+
+
+pip download --platform manylinux2014_x86_64 \
+    --only-binary=:all: \
+    --python-version 38 \
+    torch==2.0.0 \
+    torchaudio==2.0.0 \
+    transformers==4.30.0 \
+    pandas==1.5.0 \
+    numpy==1.21.0 \
+    tqdm==4.65.0 \
+    wandb==0.15.0 \
+    jiwer==3.0.0
+Transfer these wheel files to your offline PC
