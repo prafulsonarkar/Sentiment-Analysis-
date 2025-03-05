@@ -1,0 +1,160 @@
+Dependencies for the Script
+
+Your script uses the following libraries:
+
+    Python: Base language (3.8–3.10 recommended for compatibility).
+    pandas: For CSV handling.
+    torch: PyTorch for GPU-accelerated tensor operations and model training.
+    transformers: Hugging Face library for Whisper models and processor.
+    datasets: Hugging Face library for dataset handling.
+    torchaudio: For audio processing (loading WAV files, resampling).
+    evaluate: For WER metric computation.
+    jiwer: Dependency of evaluate for WER calculation (installed implicitly).
+    numpy: Often required by PyTorch and other libraries.
+
+Additional considerations:
+
+    CUDA: PyTorch and torchaudio need GPU support matching your offline PC’s CUDA version (e.g., CUDA 11.8 or 12.1 for a 20GB GPU like an NVIDIA RTX 3090).
+    Offline Model Download: Pre-download Whisper models (openai/whisper-large-v3, distil-whisper/distil-large-v3) and processor.
+
+Step-by-Step Guide
+1. Set Up Environment on Online PC
+
+Create a Conda environment with all dependencies and export it.
+bash
+# Create a new Conda environment (use Python 3.10 for broad compatibility)
+conda create -n asr_distillation python=3.10
+
+# Activate the environment
+conda activate asr_distillation
+
+# Install PyTorch with CUDA support (adjust CUDA version based on offline GPU)
+# For CUDA 11.8 (common for 20GB GPUs like RTX 3090)
+conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia
+
+# Install Hugging Face libraries
+conda install -c conda-forge transformers datasets
+
+# Install additional dependencies
+conda install -c conda-forge pandas evaluate
+
+# Install jiwer (dependency for evaluate's WER metric)
+conda install -c conda-forge jiwer
+
+# Verify installations
+python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+python -c "import transformers; print(transformers.__version__)"
+python -c "import datasets; print(datasets.__version__)"
+python -c "import torchaudio; print(torchaudio.__version__)"
+python -c "import evaluate; print(evaluate.__version__)"
+2. Pre-Download Models and Processor
+
+Since the offline PC won’t have internet, download the models and processor on the online PC.
+python
+from transformers import WhisperProcessor, WhisperForConditionalGeneration
+
+# Download teacher model
+teacher_model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-large-v3")
+teacher_model.save_pretrained("./models/whisper-large-v3")
+
+# Download student model
+student_model = WhisperForConditionalGeneration.from_pretrained("distil-whisper/distil-large-v3")
+student_model.save_pretrained("./models/distil-large-v3")
+
+# Download processor
+processor = WhisperProcessor.from_pretrained("openai/whisper-large-v3")
+processor.save_pretrained("./models/whisper-large-v3-processor")
+
+    This creates a models/ directory with subfolders whisper-large-v3, distil-large-v3, and whisper-large-v3-processor.
+
+3. Export Conda Environment and Packages
+
+Export the environment specification and download all package tarballs for offline use.
+bash
+# Export environment YAML
+conda env export > asr_distillation.yml
+
+# Export list of packages with exact versions
+conda list --export > packages.txt
+
+# Download all Conda package tarballs to a folder
+mkdir conda_packages
+conda install --download-only -c conda-forge -c pytorch -c nvidia --file packages.txt
+# Move downloaded tarballs to conda_packages (location varies by OS)
+# On Linux/macOS: typically in ~/miniconda3/pkgs/ or ~/anaconda3/pkgs/
+cp ~/miniconda3/pkgs/*.tar.bz2 ./conda_packages/
+4. Transfer to Offline PC
+
+    Copy the following to a USB drive or external storage:
+        asr_distillation.yml: Environment specification.
+        conda_packages/: Folder with all .tar.bz2 package files.
+        models/: Folder with pre-downloaded Whisper models and processor.
+        Your script (e.g., script.py) and CSV data (your_data.csv).
+
+5. Set Up Environment on Offline PC
+
+Install Conda (e.g., Miniconda) on the offline PC if not already present, then recreate the environment.
+bash
+# Verify Conda is installed
+conda --version
+
+# Create environment from YAML using local packages
+conda env create -f asr_distillation.yml --offline --use-local
+
+# Activate the environment
+conda activate asr_distillation
+
+# Add local package cache (if not automatically detected)
+conda config --append channels file://path/to/conda_packages
+
+# Install any missing packages from tarballs (if needed)
+conda install --offline /path/to/conda_packages/*.tar.bz2
+6. Update Script for Offline Use
+
+Modify the script to load models and processor from local paths instead of downloading them:
+python
+# Replace these lines:
+processor = WhisperProcessor.from_pretrained("./models/whisper-large-v3-processor")
+teacher_model = WhisperForConditionalGeneration.from_pretrained("./models/whisper-large-v3").to(device)
+student_model = WhisperForConditionalGeneration.from_pretrained("./models/distil-large-v3").to(device)
+
+    Ensure the models/ folder is in the same directory as your script or adjust the paths accordingly.
+
+7. Verify GPU and Run
+
+Check CUDA availability and run the script.
+bash
+# Verify GPU
+python -c "import torch; print(torch.cuda.is_available(), torch.cuda.current_device(), torch.cuda.get_device_name(0))"
+# Expected output: True, 0, <your GPU name, e.g., "NVIDIA RTX 3090">
+
+# Run the script
+python script.py
+Full Dependency List
+
+Here’s the explicit list of packages (with approximate versions as of March 2025; adjust based on your conda env export output):
+
+    python=3.10
+    pytorch=2.1.0 (or latest, with pytorch-cuda=11.8)
+    torchaudio=2.1.0
+    transformers=4.38.0 (or latest)
+    datasets=2.17.0 (or latest)
+    pandas=2.2.0 (or latest)
+    evaluate=0.4.1 (or latest)
+    jiwer=3.0.3 (or latest)
+    numpy=1.26.0 (or latest, installed implicitly by PyTorch)
+
+Additional Notes
+
+    CUDA Version: Confirm your offline GPU’s CUDA compatibility (e.g., nvidia-smi output). Adjust pytorch-cuda version (11.8, 12.1, etc.) accordingly on the online PC.
+    Storage: The conda_packages/ folder may be ~5–10GB, and models ~10GB (Whisper-large-v3 is ~3GB, Distil-Whisper ~1GB, plus processor files). Ensure your transfer medium has >20GB free.
+    Conflicts: Using Conda’s --download-only and --offline flags minimizes conflicts by ensuring exact version matches. If issues persist, manually install problematic packages from conda_packages/.
+    GPU Memory: A 20GB GPU (e.g., RTX 3090) can handle Whisper-large-v3 (1.55B params) and Distil-Whisper (300M params) with batch size 4, but reduce to 2 if you encounter OOM errors.
+
+Troubleshooting
+
+    CUDA Error: If torch.cuda.is_available() is False, ensure NVIDIA drivers and CUDA toolkit are installed on the offline PC (download offline installers from NVIDIA’s site beforehand).
+    Missing Package: If a dependency fails, check conda_packages/ for the .tar.bz2 file and install it manually with conda install --offline <file>.
+
+This process ensures your offline PC with a 20GB GPU can run the script without dependency conflicts. Let me know if you need further assistance!
+How can Grok help?
